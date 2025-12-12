@@ -17,13 +17,19 @@ import threading
 import sounddevice as sd  # pyright: ignore[reportMissingImports]
 import webrtcvad  # pyright: ignore[reportMissingImports]
 from collections import deque
-
-# WHISPER ---------------------------------------------------------
-import whisper  # pyright: ignore[reportMissingImports]
 import wave
-MODEL_WHISPER = whisper.load_model("small")   # modelo recomendado
+import audioop
+import tempfile
+
+# ===============================================================
+# WHISPER – MODELO MAIS LEVE
+# ===============================================================
+import whisper  # pyright: ignore[reportMissingImports]
+
+# Modelo mais leve (mais rápido). Se quiser mais qualidade, troque para "base" ou "small".
+MODEL_WHISPER = whisper.load_model("tiny")
 AUDIO_OUTPUT = "audio_entrevista.wav"
-# -----------------------------------------------------------------
+# ===============================================================
 
 ONNX_PATH = "models/emotion-ferplus.onnx"
 HAVE_EMO = False
@@ -43,20 +49,19 @@ EMO_LABELS = ["neutral", "happiness", "surprise", "sadness", "anger", "disgust",
 mp_hol = mp.solutions.holistic
 hol = mp_hol.Holistic(
     static_image_mode=False,
-    model_complexity=1,
+    model_complexity=0,           # mais leve que 1
     smooth_landmarks=True,
-    refine_face_landmarks=True,
+    refine_face_landmarks=False,  # desliga refinamento de face (mais leve)
     min_detection_confidence=0.6,
     min_tracking_confidence=0.6
 )
 
 # ===============================================================
-#  WHISPER – BUFFER DE ÁUDIO PARA TRANSCRIÇÃO
+#  BUFFER DE ÁUDIO PARA TRANSCRIÇÃO
 # ===============================================================
-audio_raw_buffer = deque()
-# Vai armazenar todo o áudio capturado para gerar o WAV depois
+audio_raw_buffer = deque()  # armazena todo áudio capturado para o WAV final
+# ===============================================================
 
-# ===============================================================
 
 class EMA:
     def __init__(self, a=0.4):
@@ -214,19 +219,24 @@ def zero_crossings(x):
 vad = webrtcvad.Vad(2)
 SAMPLE_RATE = 16000
 FRAME_MS = 20
-BUFFER_BYTES = int(SAMPLE_RATE * FRAME_MS / 1000) * 2
+BUFFER_BYTES = int(SAMPLE_RATE * FRAME_MS / 1000) * 2  # 20 ms de áudio em bytes (16-bit mono)
+
 audio_q = queue.Queue(maxsize=50)
 talking_prob = 0.0
 
-
 # ===============================================================
-# CAPTURA DE ÁUDIO – ATUALIZAÇÃO PARA SALVAR O ÁUDIO COMPLETO
+# CAPTURA DE ÁUDIO – NORMALIZAÇÃO E BUFFER MAIOR
 # ===============================================================
 def audio_cb(indata, frames, time_info, status):
+    # bytes crus do microfone
     raw = bytes(indata)
-    audio_raw_buffer.append(raw)  # salva tudo para o WAV
+
+    # salva tudo para transcrição final
+    audio_raw_buffer.append(raw)
+
+    # envia para o VAD
     try:
-        audio_q.put(raw)          # mantém o VAD
+        audio_q.put(raw)
     except:
         pass
 # ===============================================================
@@ -240,10 +250,12 @@ def audio_thread():
             data = audio_q.get(timeout=1)
         except:
             continue
+
         step = BUFFER_BYTES
         voiced = []
         for i in range(0, len(data) - step + 1, step):
-            voiced.append(1 if vad.is_speech(data[i:i + step], SAMPLE_RATE) else 0)
+            frame = data[i:i + step]
+            voiced.append(1 if vad.is_speech(frame, SAMPLE_RATE) else 0)
         if voiced:
             win.append(np.mean(voiced))
             talking_prob = float(np.mean(win))
@@ -252,12 +264,13 @@ def audio_thread():
 thr = threading.Thread(target=audio_thread, daemon=True)
 
 stream = sd.RawInputStream(
-    device=1,  # MICROFONE ID 1
+    device=1,                     # ID do microfone
     samplerate=SAMPLE_RATE,
-    blocksize=int(SAMPLE_RATE * FRAME_MS / 1000),
+    blocksize=4096,               # buffer maior = áudio mais limpo p/ Whisper
     channels=1,
     dtype="int16",
-    callback=audio_cb
+    callback=audio_cb,
+    latency="low"                 # tenta diminuir atraso
 )
 
 stream.start()
@@ -454,26 +467,36 @@ while True:
         baseline_ready = False
 
 # ===============================================================
-# QUANDO FECHAR O PROGRAMA → SALVAR ÁUDIO EM WAV + RODAR WHISPER
+# FUNÇÃO AUXILIAR – SALVAR CHUNKS EM WAV COM NORMALIZAÇÃO
+# ===============================================================
+def save_chunks_to_wav(path, chunks):
+    if len(chunks) == 0:
+        return
+    with wave.open(path, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)          # int16
+        wf.setframerate(SAMPLE_RATE)
+        for chunk in chunks:
+            # pequeno ganho para melhorar volume geral
+            try:
+                chunk = audioop.mul(chunk, 2, 1.2)
+            except:
+                pass
+            wf.writeframes(chunk)
 # ===============================================================
 
-def save_wav_file():
-    # para a captura de áudio antes de copiar
-    stream.stop()
 
+# ===============================================================
+# QUANDO FECHAR O PROGRAMA → SALVAR ÁUDIO EM WAV + RODAR WHISPER
+# ===============================================================
+def save_wav_file():
+    stream.stop()  # para captura de áudio
     safe_copy = list(audio_raw_buffer)
     if len(safe_copy) == 0:
         print("Nenhum áudio capturado.")
         return
-
     print(f"Total de chunks de áudio: {len(safe_copy)}")
-
-    with wave.open(AUDIO_OUTPUT, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)  # int16
-        wf.setframerate(SAMPLE_RATE)
-        for chunk in safe_copy:
-            wf.writeframes(chunk)
+    save_chunks_to_wav(AUDIO_OUTPUT, safe_copy)
 
 
 print("\n>>> Salvando áudio da entrevista...")
