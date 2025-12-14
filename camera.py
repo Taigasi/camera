@@ -12,24 +12,8 @@ import mediapipe as mp  # pyright: ignore[reportMissingImports]
 import onnxruntime as ort  # pyright: ignore[reportMissingImports]
 import time
 import math
-import queue
-import threading
-import sounddevice as sd  # pyright: ignore[reportMissingImports]
-import webrtcvad  # pyright: ignore[reportMissingImports]
 from collections import deque
-import wave
-import audioop
-import tempfile
 
-# ===============================================================
-# WHISPER – MODELO MAIS LEVE
-# ===============================================================
-import whisper  # pyright: ignore[reportMissingImports]
-
-# Modelo mais leve (mais rápido). Se quiser mais qualidade, troque para "base" ou "small".
-MODEL_WHISPER = whisper.load_model("tiny")
-AUDIO_OUTPUT = "audio_entrevista.wav"
-# ===============================================================
 
 ONNX_PATH = "models/emotion-ferplus.onnx"
 HAVE_EMO = False
@@ -55,12 +39,6 @@ hol = mp_hol.Holistic(
     min_detection_confidence=0.6,
     min_tracking_confidence=0.6
 )
-
-# ===============================================================
-#  BUFFER DE ÁUDIO PARA TRANSCRIÇÃO
-# ===============================================================
-audio_raw_buffer = deque()  # armazena todo áudio capturado para o WAV final
-# ===============================================================
 
 
 class EMA:
@@ -216,66 +194,6 @@ def zero_crossings(x):
     return int(np.sum(x[:-1] * x[1:] < 0))
 
 
-vad = webrtcvad.Vad(2)
-SAMPLE_RATE = 16000
-FRAME_MS = 20
-BUFFER_BYTES = int(SAMPLE_RATE * FRAME_MS / 1000) * 2  # 20 ms de áudio em bytes (16-bit mono)
-
-audio_q = queue.Queue(maxsize=50)
-talking_prob = 0.0
-
-# ===============================================================
-# CAPTURA DE ÁUDIO – NORMALIZAÇÃO E BUFFER MAIOR
-# ===============================================================
-def audio_cb(indata, frames, time_info, status):
-    # bytes crus do microfone
-    raw = bytes(indata)
-
-    # salva tudo para transcrição final
-    audio_raw_buffer.append(raw)
-
-    # envia para o VAD
-    try:
-        audio_q.put(raw)
-    except:
-        pass
-# ===============================================================
-
-
-def audio_thread():
-    global talking_prob
-    win = deque(maxlen=25)
-    while True:
-        try:
-            data = audio_q.get(timeout=1)
-        except:
-            continue
-
-        step = BUFFER_BYTES
-        voiced = []
-        for i in range(0, len(data) - step + 1, step):
-            frame = data[i:i + step]
-            voiced.append(1 if vad.is_speech(frame, SAMPLE_RATE) else 0)
-        if voiced:
-            win.append(np.mean(voiced))
-            talking_prob = float(np.mean(win))
-
-
-thr = threading.Thread(target=audio_thread, daemon=True)
-
-stream = sd.RawInputStream(
-    device=1,                     # ID do microfone
-    samplerate=SAMPLE_RATE,
-    blocksize=4096,               # buffer maior = áudio mais limpo p/ Whisper
-    channels=1,
-    dtype="int16",
-    callback=audio_cb,
-    latency="low"                 # tenta diminuir atraso
-)
-
-stream.start()
-thr.start()
-
 votes_eye = deque(maxlen=24)
 votes_cross = deque(maxlen=24)
 votes_slouch = deque(maxlen=24)
@@ -402,8 +320,6 @@ while True:
         nodding = zero_crossings(np.diff(py)) >= 2 and np.std(py) > 2.5
         headshake = zero_crossings(np.diff(px)) >= 2 and np.std(px) > 3.0
 
-    talking = talking_prob >= 0.35
-
     if HAVE_EMO and face_xy is not None:
         roi, rect = crop_face(frame, face_xy, margin=0.28)
         if roi is not None and roi.size > 0:
@@ -451,7 +367,7 @@ while True:
     y = draw_line(frame, f"Mao no rosto {'Sim' if handfaceF else 'Nao'}", y, (0, 0, 255) if handfaceF else (0, 255, 0))
     if HAVE_EMO:
         y = draw_line(frame, f"Emocao {emo_txt} {int(emo_conf * 100)}%", y)
-    y = draw_line(frame, f"Fala {'Sim' if talking else 'Nao'}", y)
+    
 
     cv2.imshow("Avaliacao de Entrevista - Tracking Pro", frame)
 
@@ -466,59 +382,6 @@ while True:
         base_dy_vals.clear()
         baseline_ready = False
 
-# ===============================================================
-# FUNÇÃO AUXILIAR – SALVAR CHUNKS EM WAV COM NORMALIZAÇÃO
-# ===============================================================
-def save_chunks_to_wav(path, chunks):
-    if len(chunks) == 0:
-        return
-    with wave.open(path, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)          # int16
-        wf.setframerate(SAMPLE_RATE)
-        for chunk in chunks:
-            # pequeno ganho para melhorar volume geral
-            try:
-                chunk = audioop.mul(chunk, 2, 1.2)
-            except:
-                pass
-            wf.writeframes(chunk)
-# ===============================================================
-
-
-# ===============================================================
-# QUANDO FECHAR O PROGRAMA → SALVAR ÁUDIO EM WAV + RODAR WHISPER
-# ===============================================================
-def save_wav_file():
-    stream.stop()  # para captura de áudio
-    safe_copy = list(audio_raw_buffer)
-    if len(safe_copy) == 0:
-        print("Nenhum áudio capturado.")
-        return
-    print(f"Total de chunks de áudio: {len(safe_copy)}")
-    save_chunks_to_wav(AUDIO_OUTPUT, safe_copy)
-
-
-print("\n>>> Salvando áudio da entrevista...")
-save_wav_file()
-
-print(">>> Transcrevendo com Whisper (pode levar alguns segundos)...")
-try:
-    result = MODEL_WHISPER.transcribe(AUDIO_OUTPUT, language="pt")
-    texto_final = result["text"]
-
-    with open("transcricao.txt", "w", encoding="utf-8") as f:
-        f.write(texto_final)
-
-    print("\n>>> TRANSCRIÇÃO FINAL:")
-    print(texto_final)
-
-except Exception as e:
-    print("Erro ao transcrever:", e)
-
-# ===============================================================
-
 cap.release()
 hol.close()
 cv2.destroyAllWindows()
-stream.close()
