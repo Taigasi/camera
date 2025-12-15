@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulador de Entrevista - IA</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+</head>
+<body>
+
+    <div class="container">
+        <header>
+            <h1>Simulador de Entrevista</h1>
+            <p>Análise comportamental em tempo real via IA</p>
+        </header>
+
+        <main class="dashboard">
+            <div class="video-card">
+                <div class="live-indicator">AO VIVO</div>
+                <img src="http://localhost:5000/video" alt="Carregando Câmera..." id="camera-feed">
+            </div>
+
+            <aside class="stats-panel">
+                
+                <div class="card score-card">
+                    <h3>Performance Geral</h3>
+                    <div class="score-circle">
+                        <span id="score-val">--</span>
+                    </div>
+                </div>
+
+                <div class="card status-list">
+                    
+                    <div class="status-item">
+                        <div class="icon-box"><i class="ph ph-smiley"></i></div>
+                        <div class="info">
+                            <span class="label">Emoção Predominante</span>
+                            <span class="value" id="emo-val">Analisando...</span>
+                        </div>
+                    </div>
+
+                    <div class="status-item">
+                        <div class="icon-box"><i class="ph ph-person-simple"></i></div>
+                        <div class="info">
+                            <span class="label">Postura Corporal</span>
+                            <span class="value" id="postura-val">--</span>
+                        </div>
+                        <div class="status-dot" id="dot-postura"></div>
+                    </div>
+
+                    <div class="status-item">
+                        <div class="icon-box"><i class="ph ph-eye"></i></div>
+                        <div class="info">
+                            <span class="label">Contato Visual</span>
+                            <div class="progress-bar">
+                                <div class="fill" id="eye-fill" style="width: 0%"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+
+                <div class="card feedback-box" id="feedback-txt">
+                    Aguardando início da análise...
+                </div>
+
+            </aside>
+        </main>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
